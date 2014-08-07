@@ -235,7 +235,7 @@ int main(int argc, char *argv[]) {
 
   printf("G28\nG1 F%.1f\n", feed_mm_per_sec * 60);
   printf("G1 X150 Y10 Z30\n");
-  printf("M109 S190\nM116\n");
+  printf("M109 S190\n");
   printf("M82 ; absolute extrusion\n");
   double rotation_per_mm = (pitch == 0) ? 10000000.0 : 1.0 / pitch;
   PolarFunction f((unsigned char*) fun_init, rotation_per_mm);
