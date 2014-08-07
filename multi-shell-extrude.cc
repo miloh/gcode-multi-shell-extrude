@@ -240,7 +240,7 @@ int main(int argc, char *argv[]) {
   double rotation_per_mm = (pitch == 0) ? 10000000.0 : 1.0 / pitch;
   PolarFunction f((unsigned char*) fun_init, rotation_per_mm);
 
-  printf("G92 E0  ; nozzle clean extrusion\n");
+  printf("G92 E0  ; reset extruder position to zero \n");
   const double test_extrusion_from = 0.8 * machine_limit_x;
   const double test_extrusion_to = 0.2 * machine_limit_x;
   printf("G1 X%.1f Y10 Z0\nG1 X%.1f Y10 E%.3f F1000\n",
