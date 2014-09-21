@@ -122,6 +122,15 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
   }
 }
 
+Polygon OffsetCenter(const Polygon& polygon, double x_offset, double y_offset) {
+  Polygon result;
+  for (std::size_t i = 0; i < polygon.size(); ++i) {
+    const Point2D &p = polygon[i];
+    result.push_back(Point2D(p.x + x_offset, p.y + y_offset));
+  }
+  return result;
+}
+
 // Read very simple polygon from file: essentially a sequence of x y
 // coordinates.
 Polygon ReadPolygon(const std::string &filename, double factor) {
@@ -181,9 +190,6 @@ double GetRadius(const Polygon &polygon) {
 }
 
 int main(int argc, char *argv[]) {
-  double start_x = 5;  // Initial edge offset.
-  double start_y = 5;
-
   ParamHeadline h1("Screw-data from template");
   StringParam fun_init    ("AABBBAABBBAABBB", "screw-template", 't', "Template string for screw.");
   FloatParam thread_depth (-1, "thread-depth", 'd',   "Depth of thread, initial-size/5 if negative");
@@ -198,6 +204,7 @@ int main(int argc, char *argv[]) {
                            "Negative for left-turning screw; 0 for straight hull.");
   FloatParam initial_size (10.0, "size",    's', "Polygon sizing parameter. Means radius if from "
                            "--screw-template, factor for --polygon-file");
+  FloatPairParam center_offset(std::make_pair(0.0f,0.0f), "center-offset", 0, "Center offset into polygon.");
   FloatParam pump         (0.0,   "pump",    0, "Pump polygon as if the center was not a dot, but a circle of this radius");
   IntParam screw_count    (2,     "number", 'n', "Number of screws to be printed");
   FloatParam initial_shell(0,     "start-offset", 0, "Initial offset for first polygon");
@@ -210,6 +217,8 @@ int main(int argc, char *argv[]) {
   FloatParam shell_thickness(0.8, "shell-thickness", 0, "Thickness of shell");
   FloatParam lock_offset  (-1,    "lock-offset", 0, "EXPERIMENTAL offset to stop screw at end; (radius_increment - 0.8)/2 + 0.05");
   FloatPairParam machine_limit(std::make_pair(150.0f,150.0f), "bed-size",    'L',  "x/y size limit of your printbed.");
+  FloatPairParam edge_offset(std::make_pair(5.0f,5.0f), "edge-offset",  0,  "Offset from the edge of the bed.");
+
   FloatPairParam head_offset(std::make_pair(45.0f,45.0f),     "head-offset", 'o', "dx/dy offset per print.");
 
   // Output options
@@ -246,13 +255,16 @@ int main(int argc, char *argv[]) {
   matryoshka = matryoshka & do_postscript;   // Formulate it this way.
 
   // Get polygon we'll be working on. Add pump if needed.
-  const Polygon base_polygon =
+  const Polygon input_polygon =
     RadialPumpPolygon(polygon_file.get().empty()
                       ? RotationalPolygon(fun_init.get().c_str(), initial_size,
                                           thread_depth, twist)
                       : ReadPolygon(polygon_file, initial_size),
                       pump);
 
+  const Polygon base_polygon = OffsetCenter(input_polygon,
+                                            center_offset.get().first,
+                                            center_offset.get().second);
   if (base_polygon.empty()) {
     fprintf(stderr, "Polygon empty\n");
     return 1;
@@ -263,6 +275,8 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  double start_x = edge_offset.get().first;
+  double start_y = edge_offset.get().second;
   if (matryoshka) {
     Polygon biggst_polygon
       = PolygonOffset(base_polygon,
