@@ -332,21 +332,10 @@ int main(int argc, char *argv[]) {
                   head_offset_x, head_offset_y);
   printer->Comment("----\n");
 
-  printf("G28\nG1 F%.1f\n", feed_mm_per_sec * 60);
-  printf("G1 X150 Y10 Z30\n");
-  printf("M109 S190\nM116\n");
-  printf("M82 ; absolute extrusion\n");
-  double rotation_per_mm = (pitch == 0) ? 10000000.0 : 1.0 / pitch;
-  PolarFunction f((unsigned char*) fun_init, rotation_per_mm);
+  printer->Init(machine_limit_x, machine_limit_y, feed_mm_per_sec);
 
-  printf("G92 E0  ; nozzle clean extrusion\n");
-  const double test_extrusion_from = 0.8 * machine_limit_x;
-  const double test_extrusion_to = 0.2 * machine_limit_x;
-  printf("G1 X%.1f Y10 Z0\nG1 X%.1f Y10 E%.3f F1000\n",
-         test_extrusion_from, test_extrusion_to,
-         (test_extrusion_from - test_extrusion_to) * filament_extrusion_factor);
-  printf("G1 Z5\n");
-  printf("M83\nG1 E-3 ; retract\nM82\n");  // relative, retract, absolute
+  // How much the whole system should rotate per mm height.
+  const double rotation_per_mm = (fabs(pitch) < 0.1) ? 0 : 1.0 / pitch;
 
   double total_time = 0;
   double total_travel = 0;
