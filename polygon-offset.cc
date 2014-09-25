@@ -26,16 +26,23 @@ static bool is_centered(const ClipperLib::Path &path) {
   return (min_x < 0 && max_x > 0 && min_y < 0 && max_y > 0);
 }
 
-Polygon PolygonOffset(const Polygon &polygon, double offset) {
+Polygon PolygonOffset(const Polygon &polygon, double offset,
+                      OffsetType type) {
   ClipperLib::Path path;
   for (std::size_t i = 0; i < polygon.size(); ++i) {
-    const Point2D &p = polygon[i];
+    const Vector2D &p = polygon[i];
     path.push_back(ClipperLib::IntPoint(100 * p.x, 100 * p.y));
   }
 
   ClipperLib::Paths solutions;
   ClipperLib::ClipperOffset co(2.0, 5); // 5/100mm = 1/20mm
-  co.AddPath(path, ClipperLib::jtRound, ClipperLib::etClosedPolygon);
+  ClipperLib::JoinType join = ClipperLib::jtRound;
+  switch (type) {
+  case kOffsetRound:  join = ClipperLib::jtRound; break;
+  case kOffsetSquare: join = ClipperLib::jtSquare; break;
+  case kOffsetMiter:  join = ClipperLib::jtMiter; break;
+  }
+  co.AddPath(path, join, ClipperLib::etClosedPolygon);
   co.Execute(solutions, 100.0 * offset);
 
   // A polygon might become pieces when offset. Use the one that is centered.
@@ -50,17 +57,17 @@ Polygon PolygonOffset(const Polygon &polygon, double offset) {
   Polygon tmp;
   for (std::size_t i = 0; i < centered_polygon.size(); ++i) {
     const ClipperLib::IntPoint &p = centered_polygon[i];
-    tmp.push_back(Point2D(p.X / 100.0, p.Y / 100.0));
+    tmp.push_back(Vector2D(p.X / 100.0, p.Y / 100.0));
   }
 
   // The way the clipper library works, the offset polygon might start at a
   // different point - after all, it is a different polygon.
   // Let's try to find the one that is closest to the start of the input polygon.
-  const Point2D &reference = polygon[0];
+  const Vector2D &reference = polygon[0];
   double smallest = -1;
   std::size_t offset_index = 0;
   for (std::size_t i = 0; i < tmp.size(); ++i) {
-    const Point2D &p = tmp[i];
+    const Vector2D &p = tmp[i];
     double dist = distance(p.x - reference.x, p.y - reference.y, 0);
     if (i == 0 || dist < smallest) {
       offset_index = i;

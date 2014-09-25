@@ -35,11 +35,11 @@ double CalcPolygonLen(const Polygon &polygon) {
 // Requires: Polygon with centroid on (0,0)
 static void CreateExtrusion(const Polygon &extrusion_polygon,
                             Printer *printer,
-                            double offset_x, double offset_y,
+                            const Vector2D &center,
                             double layer_height, double total_height,
                             double rotation_per_mm,
                             double lock_offset) {
-  printer->Comment("Center X=%.1f Y=%.1f\n", offset_x, offset_y);
+  printer->Comment("Center X=%.1f Y=%.1f\n", center.x, center.y);
   const double rotation_per_layer = layer_height * rotation_per_mm * 2 * M_PI;
   bool fan_is_on = false;
   printer->SwitchFan(false);
@@ -93,7 +93,7 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
 
     if (state != prev_state) {
       polygon_len = CalcPolygonLen(p);
-      printer->MoveTo(p[0].x + offset_x, p[0].y + offset_y, height);
+      printer->MoveTo(p[0].x + center.x, p[0].y + center.y, height);
     }
 
     for (int i = 0; i < (int) p.size(); ++i) {
@@ -108,10 +108,10 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
       const double y = p[i].y * cos(a) + p[i].x * sin(a);
       const double z = height + layer_height * fraction;
       if (z < total_height - 0.20 * layer_height) {
-        printer->ExtrudeTo(x + offset_x, y + offset_y, z);
+        printer->ExtrudeTo(x + center.x, y + center.y, z);
       } else {
         // In the last layer, we stop extruding to have a smooth finish.
-        printer->MoveTo(x + offset_x, y + offset_y, z);
+        printer->MoveTo(x + center.x, y + center.y, z);
       }
     }
 
@@ -125,8 +125,8 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
 Polygon OffsetCenter(const Polygon& polygon, double x_offset, double y_offset) {
   Polygon result;
   for (std::size_t i = 0; i < polygon.size(); ++i) {
-    const Point2D &p = polygon[i];
-    result.push_back(Point2D(p.x + x_offset, p.y + y_offset));
+    const Vector2D &p = polygon[i];
+    result.push_back(Vector2D(p.x + x_offset, p.y + y_offset));
   }
   return result;
 }
@@ -149,7 +149,7 @@ Polygon ReadPolygon(const std::string &filename, double factor) {
       start++;
     if (*start == '\0' || *start == '#')
       continue;
-    Point2D p;
+    Vector2D p;
     if (sscanf(start, "%lf %lf", &p.x, &p.y) == 2) {
       p.x *= factor;
       p.y *= factor;
@@ -172,10 +172,10 @@ Polygon RadialPumpPolygon(const Polygon& polygon, double pump_r) {
     return polygon;
   Polygon result;
   for (std::size_t i = 0; i < polygon.size(); ++i) {
-    const Point2D &p = polygon[i];
+    const Vector2D &p = polygon[i];
     double from_center = distance(p.x, p.y, 0);
     double stretch = (from_center + pump_r) / from_center;
-    result.push_back(Point2D(p.x * stretch, p.y * stretch));
+    result.push_back(Vector2D(p.x * stretch, p.y * stretch));
   }
   return result;
 }
@@ -199,30 +199,33 @@ int main(int argc, char *argv[]) {
   StringParam polygon_file("", "polygon-file", 'D',  "File describing polygon. Files with x y pairs");
 
   ParamHeadline h3("General Parameters");
-  FloatParam total_height (-1,    "height", 'h', "Total height to be printed");
+  FloatParam total_height (-1,    "height", 'h', "Total height to be printed (must set)");
   FloatParam pitch        (30.0,  "pitch",  'p', "Millimeter height a full turn takes. "
                            "Negative for left-turning screw; 0 for straight hull.");
   FloatParam initial_size (10.0, "size",    's', "Polygon sizing parameter. Means radius if from "
                            "--screw-template, factor for --polygon-file");
-  FloatPairParam center_offset(std::make_pair(0.0f,0.0f), "center-offset", 0, "Center offset into polygon.");
+  Vector2DParam center_offset(Vector2D(0.0, 0.0), "center-offset", 0, "Center offset into polygon.");
   FloatParam pump         (0.0,   "pump",    0, "Pump polygon as if the center was not a dot, but a circle of this radius");
   IntParam screw_count    (2,     "number", 'n', "Number of screws to be printed");
   FloatParam initial_shell(0,     "start-offset", 0, "Initial offset for first polygon");
   FloatParam shell_increment(1.2, "offset", 'R', "Offset increment between screws - the clearance");
+  FloatParam lock_offset  (-1,    "lock-offset", 0, "EXPERIMENTAL offset to stop screw at end; (radius_increment - 0.8)/2 + 0.05");
+
+  ParamHeadline h4("Quality");
   FloatParam layer_height (0.16,  "layer-height", 'l', "Height of each layer");
+  FloatParam shell_thickness(0.8, "shell-thickness", 0, "Thickness of shell");
   FloatParam feed_mm_per_sec(100, "feed-rate",    'f', "maximum, in mm/s");
   FloatParam min_layer_time(8,    "layer-time",   'T', "Min time per layer; upper bound for feed-rate");
+
+  ParamHeadline h5("Printer Parameters");
   FloatParam nozzle_diameter(0.4, "nozzle-diameter", 0, "Diameter of extruder nozzle");
   FloatParam filament_diameter(1.75, "filament-diameter", 0, "Diameter of filament");
-  FloatParam shell_thickness(0.8, "shell-thickness", 0, "Thickness of shell");
-  FloatParam lock_offset  (-1,    "lock-offset", 0, "EXPERIMENTAL offset to stop screw at end; (radius_increment - 0.8)/2 + 0.05");
-  FloatPairParam machine_limit(std::make_pair(150.0f,150.0f), "bed-size",    'L',  "x/y size limit of your printbed.");
-  FloatPairParam edge_offset(std::make_pair(5.0f,5.0f), "edge-offset",  0,  "Offset from the edge of the bed.");
-
-  FloatPairParam head_offset(std::make_pair(45.0f,45.0f),     "head-offset", 'o', "dx/dy offset per print.");
+  Vector2DParam machine_limit(Vector2D(150.0,150.0), "bed-size",    'L',  "x/y size limit of your printbed.");
+  Vector2DParam head_offset(Vector2D(45.0,45.0),"head-offset", 'o', "dx/dy offset per print.");
+  Vector2DParam edge_offset(Vector2D(5.0,5.0), "edge-offset",  0,  "Offset from the edge of the bed (bottom left origin).");
 
   // Output options
-  ParamHeadline h4("Output Options");
+  ParamHeadline h6("Output Options");
   BoolParam do_postscript(false, "postscript", 'P', "PostScript output instead of GCode output");
   BoolParam matryoshka(false,    "nested",      0, "For PostScript: show nested (Matryoshka doll style)");
 
@@ -247,24 +250,28 @@ int main(int argc, char *argv[]) {
   const double nozzle_radius = nozzle_diameter / 2;
   const double filament_radius = filament_diameter / 2;
   const double shell_thickness_factor = shell_thickness / nozzle_diameter;
-  const double head_offset_x = head_offset.get().first;
-  const double head_offset_y = head_offset.get().second;
-  double machine_limit_x = machine_limit.get().first;
-  double machine_limit_y = machine_limit.get().second;
 
   matryoshka = matryoshka & do_postscript;   // Formulate it this way.
 
-  // Get polygon we'll be working on. Add pump if needed.
-  const Polygon input_polygon =
-    RadialPumpPolygon(polygon_file.get().empty()
-                      ? RotationalPolygon(fun_init.get().c_str(), initial_size,
-                                          thread_depth, twist)
-                      : ReadPolygon(polygon_file, initial_size),
-                      pump);
+  // Get polygon we'll be working on; either from rotational input or file.
+  Polygon input_polygon = (polygon_file.get().empty()
+                           ? RotationalPolygon(fun_init.get().c_str(),
+                                               initial_size,
+                                               thread_depth, twist)
+                           : ReadPolygon(polygon_file, initial_size));
 
-  const Polygon base_polygon = OffsetCenter(input_polygon,
-                                            center_offset.get().first,
-                                            center_offset.get().second);
+  // Add pump if needed.
+  if (pump > 0) {
+    input_polygon = RadialPumpPolygon(input_polygon, pump);
+  }
+
+  // .. and offsetting
+  if (center_offset->x != 0 || center_offset->y != 0) {
+    input_polygon = OffsetCenter(input_polygon,
+                                 center_offset->x, center_offset->y);
+  }
+
+  const Polygon base_polygon = input_polygon;
   if (base_polygon.empty()) {
     fprintf(stderr, "Polygon empty\n");
     return 1;
@@ -275,17 +282,15 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  double start_x = edge_offset.get().first;
-  double start_y = edge_offset.get().second;
   if (matryoshka) {
     Polygon biggst_polygon
       = PolygonOffset(base_polygon,
                       initial_shell + (screw_count-1) * shell_increment);
     double max_radius = GetRadius(biggst_polygon);
-    machine_limit_x = 2 * (max_radius + 5);
-    machine_limit_y = 2 * (max_radius + 5);
-    start_x = max_radius + 5;
-    start_y = max_radius + 5;
+    machine_limit->x = 2 * (max_radius + 5);
+    machine_limit->y = 2 * (max_radius + 5);
+    edge_offset->x = max_radius + 5;
+    edge_offset->y = max_radius + 5;
   }
 
   const double filament_extrusion_factor = shell_thickness_factor *
@@ -301,7 +306,7 @@ int main(int argc, char *argv[]) {
   } else {
     printer = CreateGCodePrinter(filament_extrusion_factor);
   }
-  printer->Preamble(machine_limit_x, machine_limit_y, feed_mm_per_sec);
+  printer->Preamble(machine_limit, feed_mm_per_sec);
 
   printer->Comment("https://github.com/hzeller/gcode-multi-shell-extrude\n");
   printer->Comment("\n");
@@ -328,11 +333,11 @@ int main(int argc, char *argv[]) {
                    pitch.get(), layer_height.get());
   printer->Comment("machine limits: bed: (%.0f/%.0f):  "
                   "head-offset: (%.0f,%.0f)\n",
-                  machine_limit_x, machine_limit_y,
-                  head_offset_x, head_offset_y);
+                   machine_limit->x, machine_limit->y,
+                   head_offset->x, head_offset->y);
   printer->Comment("----\n");
 
-  printer->Init(machine_limit_x, machine_limit_y, feed_mm_per_sec);
+  printer->Init(machine_limit, feed_mm_per_sec);
 
   // How much the whole system should rotate per mm height.
   const double rotation_per_mm = (fabs(pitch) < 0.1) ? 0 : 1.0 / pitch;
@@ -340,8 +345,7 @@ int main(int argc, char *argv[]) {
   double total_time = 0;
   double total_travel = 0;
 
-  double x = start_x;
-  double y = start_y;
+  Vector2D center = edge_offset;
   printer->SetSpeed(feed_mm_per_sec);  // initial speed.
   for (int i = 0; i < screw_count; ++i) {
     Polygon polygon = PolygonOffset(base_polygon,
@@ -349,25 +353,27 @@ int main(int argc, char *argv[]) {
     double radius = GetRadius(polygon);
     if (!matryoshka) {
       // New center.
-      x += radius;
-      y += radius;
+      center.x += radius;
+      center.y += radius;
     }
-    if (x + radius + 5 > machine_limit_x || y + radius + 5 > machine_limit_y) {
+    if (center.x + radius + 5 > machine_limit->x ||
+        center.y + radius + 5 > machine_limit->y) {
       fprintf(stderr, "With currently configured bedsize and printhead-offset, "
               "only %d screws fit (radius is %.1fmm)\n"
               "Configure your machine constraints with -L <x/y> -o < dx,dy> "
               "(currently -L %.0f,%.0f -o %.0f,%.0f)\n", i, radius,
-              machine_limit_x, machine_limit_y, head_offset_x, head_offset_y);
+              machine_limit->x, machine_limit->y,
+              head_offset->x, head_offset->y);
       break;
     }
-    printer->MoveTo(x, y, i > 0 ? total_height + 5 : 5);
+    printer->MoveTo(center.x, center.y, i > 0 ? total_height + 5 : 5);
     float layer_feedrate = CalcPolygonLen(polygon) / min_layer_time;
     layer_feedrate = std::min(layer_feedrate, feed_mm_per_sec.get());
     printer->ResetExtrude();
     printer->SetSpeed(layer_feedrate);
     printer->Comment("Screw #%d, polygon-offset=%.1f\n",
                      i+1, initial_shell + i * shell_increment);
-    CreateExtrusion(polygon, printer, x, y, layer_height, total_height,
+    CreateExtrusion(polygon, printer, center, layer_height, total_height,
                     rotation_per_mm, lock_offset);
     const double travel = printer->GetExtrusionDistance();  // since last reset.
     total_travel += travel;
@@ -376,8 +382,8 @@ int main(int argc, char *argv[]) {
     printer->Retract();
     printer->GoZPos(total_height + 5);
     if (!matryoshka) {
-      x += head_offset_x + radius;
-      y += head_offset_y + radius;
+      center.x += head_offset->x + radius;
+      center.y += head_offset->y + radius;
     }
   }
 

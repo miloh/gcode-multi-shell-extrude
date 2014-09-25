@@ -77,17 +77,17 @@ template<> std::string TypedParameter<bool>::ToString() const {
 template<> bool TypedParameter<bool>::RequiresValue() const { return false; }
 
 template<>
-bool TypedParameter<std::pair<float,float> >::FromString(const char *s) {
-  return sscanf(s, "%f,%f", &value_.first, &value_.second) == 2;
+bool TypedParameter<Vector2D>::FromString(const char *s) {
+  return sscanf(s, "%lf,%lf", &value_.x, &value_.y) == 2;
 }
 
 template<>
-std::string TypedParameter<std::pair<float,float> >::ToString() const {
+std::string TypedParameter<Vector2D>::ToString() const {
   char buffer[30];
-  snprintf(buffer, sizeof(buffer), "%.2f,%.2f", value_.first, value_.second);
+  snprintf(buffer, sizeof(buffer), "%.2f,%.2f", value_.x, value_.y);
   return buffer;
 }
-template<> bool TypedParameter<std::pair<float,float> >::RequiresValue() const {
+template<> bool TypedParameter<Vector2D>::RequiresValue() const {
   return true;
 }
 
@@ -95,22 +95,25 @@ int ParameterUsage(const char *progname) {
   fprintf(stderr, "usage: %s [options]\n", progname);
   if (!sRegisteredParameters)
     return 1;
-  const int kIndentBetweenOptionAndHelp = 18;
-  fprintf(stderr, "Synopsis:\n*** Long option%*s[short]: <help>\n",
-          kIndentBetweenOptionAndHelp - 7, "");
+  const int kIndentBetweenOptionAndHelp = 26;
+  fprintf(stderr, "Synopsis:\n... Long option%*s[short]: <help>\n",
+          kIndentBetweenOptionAndHelp - 16, "");
   for (ParamList::const_iterator it = sRegisteredParameters->begin();
        it != sRegisteredParameters->end(); ++it) {
     int indent = kIndentBetweenOptionAndHelp;
     const Parameter *const p = *it;
     if (p->option_name == NULL && p->option_char == 0) {
       // This is a headline.
-      fprintf(stderr, "\n [ %s ]\n", p->helptext);
+      fprintf(stderr, "\n[ %s ]\n", p->helptext);
       continue;
     }
     if (p->option_name) {
-      fprintf(stderr, "    --%s <value> ",
-              p->option_name);
+      fprintf(stderr, "    --%s", p->option_name);
       indent -= strlen(p->option_name);
+      if (p->RequiresValue()) {
+        fprintf(stderr, " <value>");
+        indent -= strlen(" <value>");
+      }
     }
     if (p->option_char) indent -=4;
     fprintf(stderr, "%*s", indent, "");

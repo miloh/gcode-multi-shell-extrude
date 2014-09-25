@@ -17,32 +17,32 @@ public:
   GCodePrinter(double extrusion_factor)
     : filament_extrusion_factor_(extrusion_factor), extrude_dist_(0) {}
 
-  virtual void Preamble(double machine_limit_x, double machine_limit_y,
+  virtual void Preamble(const Vector2D &machine_limit,
                         double feed_mm_per_sec) {
     printf("; G-Code\n\n");
   }
 
-  virtual void Init(double machine_limit_x, double machine_limit_y,
+  virtual void Init(const Vector2D &machine_limit,
                     double feed_mm_per_sec) {
     printf("G28\nG1 F%.1f\n", feed_mm_per_sec * 60);
-    printf("G1 X150 Y10 Z30\n");
+    printf("M82 ; absolute E\nG92 E0 ; zero E\n");
+    printf("G0 X%.1f Y10 Z30 ; move to center front\n", machine_limit.x/2);
     printf("M109 S190\nM116\n");
-    printf("M82 ; absolute extrusion\n");
-    printf("G1 E5\n"); // squirt out stuff.
+    printf("G1 E3 ; squirt out some test in air\n"); // squirt out some test
     printf("G92 E0\n; test extrusion...\n");
-    const double test_extrusion_from = 0.8 * machine_limit_x;
-    const double test_extrusion_to = 0.2 * machine_limit_x;
-    const double length = test_extrusion_from - test_extrusion_to;
-    printf("G1 X%.1f Y10 Z0\nG1 X%.1f Y10 E%.3f F1000\n",
-           test_extrusion_from, test_extrusion_to,
-           length * filament_extrusion_factor_);
-    printf("M83\nG1 E%.1f ; retract\nM82\n", -kRetractAmount); // in rel mode.
-    printf("G1 Z5\n");
+    const double test_extrusion_from = 0.8 * machine_limit.x;
+    const double test_extrusion_to = 0.2 * machine_limit.x;
+    SetSpeed(feed_mm_per_sec / 3);
+    MoveTo(test_extrusion_from, 10, 0);
+    ExtrudeTo(test_extrusion_to, 10, 0);
+    Retract();
+    GoZPos(5);
   }
   virtual void Postamble() {
     printf("M104 S0 ; hotend off\n");
     printf("M106 S0 ; fan off\n");
     printf("G28 X0 Y0\n");
+    printf("G92 E0\n");
     printf("M84\n");
   }
   virtual double GetExtrusionDistance() { return extrude_dist_; }
@@ -94,13 +94,13 @@ public:
   PostScriptPrinter(bool show_move_as_line, double line_thickness)
     : show_move_as_line_(show_move_as_line), line_thickness_(line_thickness),
       in_move_color_(false) {}
-  virtual void Preamble(double machine_limit_x, double machine_limit_y,
+  virtual void Preamble(const Vector2D &machine_limit,
                         double feed_mm_per_sec) {
     const float mm_to_point = 1 / 25.4 * 72.0;
     printf("%%!PS-Adobe-3.0\n%%%%BoundingBox: 0 0 %.0f %.0f\n\n",
-           machine_limit_x * mm_to_point, machine_limit_y * mm_to_point);
+           machine_limit.x * mm_to_point, machine_limit.y * mm_to_point);
   }
-  virtual void Init(double machine_limit_x, double machine_limit_y,
+  virtual void Init(const Vector2D &machine_limit,
                     double feed_mm_per_sec) {
     printf("72.0 25.4 div dup scale  %% Switch to mm\n");
     printf("1 setlinejoin\n");

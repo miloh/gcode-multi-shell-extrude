@@ -8,12 +8,12 @@
 #include <vector>
 #include <math.h>
 
-struct Point2D {
-  Point2D() : x(0), y(0) {}
-  Point2D(double xx, double yy) : x(xx), y(yy){}
+struct Vector2D {
+  Vector2D() : x(0), y(0) {}
+  Vector2D(double xx, double yy) : x(xx), y(yy){}
   double x, y;
 };
-typedef std::vector<Point2D> Polygon;
+typedef std::vector<Vector2D> Polygon;
 
 // Calculate euclidian distance.
 inline double distance(double dx, double dy, double dz) {
@@ -28,6 +28,8 @@ Polygon RotationalPolygon(const char *fun_init, double inner_radius,
 // Offset an polygon. Minkowski with disk of radius "offset".
 // The actual Minkowski sum would have arc segments, that is flattened as
 // line segments. In polygon-offset.cc
-Polygon PolygonOffset(const Polygon &in, double offset);
+enum OffsetType { kOffsetRound, kOffsetSquare, kOffsetMiter };
+Polygon PolygonOffset(const Polygon &in, double offset,
+                      OffsetType type = kOffsetRound);
 
 #endif  // MULTI_SHELL_EXTRUDE_H_
