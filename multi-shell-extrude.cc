@@ -18,6 +18,10 @@
 #include "printer.h"
 #include "config-values.h"
 
+// 1.0 to display line thickness := shell-thickness.
+// Smaller to better distinguish lines.
+static float kPostscriptLineThickFactor = 0.8;
+
 // The total length of distance going through a polygon.
 double CalcPolygonLen(const Polygon &polygon) {
   double len = 0;
@@ -32,6 +36,46 @@ double CalcPolygonLen(const Polygon &polygon) {
   return len;
 }
 
+static void CreateBottomPlate(const Polygon &target_polygon,
+                              Printer *printer,
+                              const Vector2D &center_offset,
+                              float outer_distance, float inner_distance,
+                              float spiral_distance) {
+  bool is_first = true;
+  printer->Comment("Create brim/vessel-bottom\n");
+  printer->SetColor(0, 0.5, 0);
+  const float z_height = spiral_distance/6;
+  const Vector2D centroid = Centroid(target_polygon);
+  for (float poffset = outer_distance;
+       poffset > inner_distance; poffset -= spiral_distance) {
+    Polygon p = PolygonOffset(target_polygon, poffset);
+    if (p.size() == 0)
+      return;   // Natural end of moving towards center.
+    float run_len = 0;
+    const float polygon_len = CalcPolygonLen(p);
+    // fudging a spiral: we want that the distance from the center
+    // is one spiral_distance less in the end.
+    float outer_distance = (p[0] - centroid).magnitude();
+    for (int i = 0; i < (int) p.size(); ++i) {
+      if (i == 0) {
+        run_len = 0;
+      } else {
+        run_len += (p[i] - p[i-1]).magnitude();
+      }
+      Vector2D current_point_from_center = p[i] - centroid;
+      const double fraction = run_len / polygon_len;
+      float spiral_adjust = (outer_distance - fraction*spiral_distance)/outer_distance;
+      current_point_from_center = current_point_from_center * spiral_adjust;
+      Vector2D next_pos = center_offset + centroid + current_point_from_center;
+      if (is_first)
+        printer->MoveTo(next_pos, z_height);
+      else
+        printer->ExtrudeTo(next_pos, z_height);
+      is_first = false;
+    }
+  }
+}
+
 // Requires: Polygon with centroid on (0,0)
 static void CreateExtrusion(const Polygon &extrusion_polygon,
                             Printer *printer,
@@ -40,6 +84,7 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
                             double rotation_per_mm,
                             double lock_offset) {
   printer->Comment("Center X=%.1f Y=%.1f\n", center.x, center.y);
+  printer->SetColor(0, 0, 0);
   const double rotation_per_layer = layer_height * rotation_per_mm * 2 * M_PI;
   bool fan_is_on = false;
   printer->SwitchFan(false);
@@ -93,7 +138,7 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
 
     if (state != prev_state) {
       polygon_len = CalcPolygonLen(p);
-      printer->MoveTo(p[0].x + center.x, p[0].y + center.y, height);
+      printer->MoveTo(p[0] + center, height);
     }
 
     for (int i = 0; i < (int) p.size(); ++i) {
@@ -104,14 +149,13 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
       }
       const double fraction = run_len / polygon_len;
       const double a = angle + fraction * rotation_per_layer;
-      const double x = p[i].x * cos(a) - p[i].y * sin(a);
-      const double y = p[i].y * cos(a) + p[i].x * sin(a);
+      const Vector2D point = rotate(p[i], a);
       const double z = height + layer_height * fraction;
       if (z < total_height - 0.20 * layer_height) {
-        printer->ExtrudeTo(x + center.x, y + center.y, z);
+        printer->ExtrudeTo(point + center, z);
       } else {
         // In the last layer, we stop extruding to have a smooth finish.
-        printer->MoveTo(x + center.x, y + center.y, z);
+        printer->MoveTo(point + center, z);
       }
     }
 
@@ -210,6 +254,11 @@ int main(int argc, char *argv[]) {
   FloatParam initial_shell(0,     "start-offset", 0, "Initial offset for first polygon");
   FloatParam shell_increment(1.2, "offset", 'R', "Offset increment between screws - the clearance");
   FloatParam lock_offset  (-1,    "lock-offset", 0, "EXPERIMENTAL offset to stop screw at end; (radius_increment - 0.8)/2 + 0.05");
+  FloatParam brim(0, "brim", 0, "Add brim of this size on the bottom for better stability");
+  FloatParam brim_spiral_factor(0.55, "brim-spiral-factor", 0,
+                               "Distance between spirals in brim as factor of shell-thickness");
+  FloatParam brim_smooth_radius(0, "brim-smooth-radius", 0, "Smoothing of brim connection to polygon to not get lost in inner details");
+  BoolParam vessel(false, "vessel", 0, "Make a vessel with closed bottom");
 
   ParamHeadline h4("Quality");
   FloatParam layer_height (0.16,  "layer-height", 'l', "Height of each layer");
@@ -282,15 +331,40 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  // Determine limits
   if (matryoshka) {
     Polygon biggst_polygon
       = PolygonOffset(base_polygon,
                       initial_shell + (screw_count-1) * shell_increment);
-    double max_radius = GetRadius(biggst_polygon);
-    machine_limit->x = 2 * (max_radius + 5);
-    machine_limit->y = 2 * (max_radius + 5);
-    edge_offset->x = max_radius + 5;
-    edge_offset->y = max_radius + 5;
+    double max_radius = GetRadius(biggst_polygon) + brim;
+    Vector2D poly_radius(max_radius + 5, max_radius + 5);
+    machine_limit = poly_radius * 2;
+    edge_offset = poly_radius;  // In matryoshka-case, edge_offset is center
+  } else {
+    const Vector2D max_machine = machine_limit - edge_offset;
+    Vector2D pos = edge_offset;
+    float radius = GetRadius(PolygonOffset(base_polygon, initial_shell));
+    Vector2D screw_dimension(2 * (radius + brim), 2*(radius + brim));
+    for (int i = 0; i < screw_count; ++i) {
+      Vector2D new_pos = pos + screw_dimension;
+      if (new_pos.x > max_machine.x || new_pos.y > max_machine.y) {
+        fprintf(stderr, "With currently configured bedsize and printhead-offset, "
+                "only %d screws fit (radius is %.1fmm)\n"
+                "Configure your machine constraints with -L <x/y> -o < dx,dy> "
+                "(currently -L %.0f,%.0f -o %.0f,%.0f)\n", i, radius,
+                machine_limit->x, machine_limit->y,
+                head_offset->x, head_offset->y);
+        screw_count = i;
+        break;
+      }
+      pos = new_pos + head_offset;
+      screw_dimension = screw_dimension
+        + Vector2D(shell_increment, shell_increment) * 2;
+    }
+    pos = pos - head_offset;
+    // Now, pos is the largest corner. We can offset
+    // the edge_offset now to the difference to center things.
+    edge_offset = edge_offset + (max_machine - pos - edge_offset) / 2;
   }
 
   const double filament_extrusion_factor = shell_thickness_factor *
@@ -302,7 +376,7 @@ int main(int argc, char *argv[]) {
                             3 * layer_height); // not needed more.
     // no move lines w/ Matryoshka
     printer = CreatePostscriptPrinter(!matryoshka,
-                                      shell_thickness_factor * 2*nozzle_radius);
+                                      kPostscriptLineThickFactor * shell_thickness);
   } else {
     printer = CreateGCodePrinter(filament_extrusion_factor);
   }
@@ -355,29 +429,34 @@ int main(int argc, char *argv[]) {
               initial_shell + i * shell_increment);
       continue;
     }
-    double radius = GetRadius(polygon);
+    const double radius = GetRadius(polygon);
+    Vector2D screw_radius(radius + brim, radius + brim);
     if (!matryoshka) {
-      // New center.
-      center.x += radius;
-      center.y += radius;
+      // We start here.
+      center = center + screw_radius;
     }
-    if (center.x + radius + 5 > machine_limit->x ||
-        center.y + radius + 5 > machine_limit->y) {
-      fprintf(stderr, "With currently configured bedsize and printhead-offset, "
-              "only %d screws fit (radius is %.1fmm)\n"
-              "Configure your machine constraints with -L <x/y> -o < dx,dy> "
-              "(currently -L %.0f,%.0f -o %.0f,%.0f)\n", i, radius,
-              machine_limit->x, machine_limit->y,
-              head_offset->x, head_offset->y);
-      break;
-    }
-    printer->MoveTo(center.x, center.y, i > 0 ? total_height + 5 : 5);
+    printer->MoveTo(center, i > 0 ? total_height + 5 : 5);
     float layer_feedrate = CalcPolygonLen(polygon) / min_layer_time;
     layer_feedrate = std::min(layer_feedrate, feed_mm_per_sec.get());
     printer->ResetExtrude();
     printer->SetSpeed(layer_feedrate);
     printer->Comment("Screw #%d, polygon-offset=%.1f\n",
                      i+1, initial_shell + i * shell_increment);
+    if (brim > 0) {
+      const float spiral_layer_distance = shell_thickness * brim_spiral_factor;
+      int layers = (int) ceil(brim / spiral_layer_distance);
+      Polygon brim_polygon = polygon;
+      if (brim_smooth_radius > 0)
+        brim_polygon = PolygonOffset(PolygonOffset(polygon, brim_smooth_radius), -brim_smooth_radius);
+      CreateBottomPlate(brim_polygon, printer, center,
+                        layers * spiral_layer_distance, spiral_layer_distance/2,
+                        spiral_layer_distance);
+    }
+    if (vessel) {
+      const float spiral_layer_distance = shell_thickness * brim_spiral_factor;
+      CreateBottomPlate(polygon, printer, center,
+                        0, -radius, spiral_layer_distance);
+    }
     CreateExtrusion(polygon, printer, center, layer_height, total_height,
                     rotation_per_mm, lock_offset);
     const double travel = printer->GetExtrusionDistance();  // since last reset.
@@ -387,8 +466,7 @@ int main(int argc, char *argv[]) {
     printer->Retract();
     printer->GoZPos(total_height + 5);
     if (!matryoshka) {
-      center.x += head_offset->x + radius;
-      center.y += head_offset->y + radius;
+      center = center + screw_radius + head_offset;
     }
   }
 

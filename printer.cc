@@ -33,8 +33,8 @@ public:
     const double test_extrusion_from = 0.8 * machine_limit.x;
     const double test_extrusion_to = 0.2 * machine_limit.x;
     SetSpeed(feed_mm_per_sec / 3);
-    MoveTo(test_extrusion_from, 10, 0);
-    ExtrudeTo(test_extrusion_to, 10, 0);
+    MoveTo(Vector2D(test_extrusion_from, 10), 0);
+    ExtrudeTo(Vector2D(test_extrusion_to, 10), 0);
     Retract();
     GoZPos(5);
   }
@@ -58,15 +58,15 @@ public:
   virtual void GoZPos(double z) {
     printf("G1 Z%.3f\n", z);
   }
-  virtual void MoveTo(double x, double y, double z) {
-    printf("G1 X%.3f Y%.3f Z%.3f\n", x, y, z);
-    last_x = x; last_y = y; last_z = z;
+  virtual void MoveTo(const Vector2D &pos, double z) {
+    printf("G1 X%.3f Y%.3f Z%.3f\n", pos.x, pos.y, z);
+    last_x = pos.x; last_y = pos.y; last_z = z;
   }
-  virtual void ExtrudeTo(double x, double y, double z) {
-    extrude_dist_ += distance(x - last_x, y - last_y, z - last_z);
-    printf("G1 X%.3f Y%.3f Z%.3f E%.3f\n", x, y, z,
+  virtual void ExtrudeTo(const Vector2D &pos, double z) {
+    extrude_dist_ += distance(pos.x - last_x, pos.y - last_y, z - last_z);
+    printf("G1 X%.3f Y%.3f Z%.3f E%.3f\n", pos.x, pos.y, z,
            extrude_dist_ * filament_extrusion_factor_);
-    last_x = x; last_y = y; last_z = z;
+    last_x = pos.x; last_y = pos.y; last_z = z;
   }
   virtual void ResetExtrude() {
     printf("M83\n"  // extruder relative mode
@@ -93,7 +93,8 @@ class PostScriptPrinter : public Printer {
 public:
   PostScriptPrinter(bool show_move_as_line, double line_thickness)
     : show_move_as_line_(show_move_as_line), line_thickness_(line_thickness),
-      in_move_color_(false) {}
+      in_move_color_(false), r_(0), g_(0), b_(0) {
+  }
   virtual void Preamble(const Vector2D &machine_limit,
                         double feed_mm_per_sec) {
     const float mm_to_point = 1 / 25.4 * 72.0;
@@ -102,6 +103,7 @@ public:
   }
   virtual void Init(const Vector2D &machine_limit,
                     double feed_mm_per_sec) {
+    printf("/extrude-to { lineto } def\n");
     printf("72.0 25.4 div dup scale  %% Switch to mm\n");
     printf("1 setlinejoin\n");
     printf("%.2f setlinewidth %% mm\n", line_thickness_);
@@ -122,27 +124,32 @@ public:
   }
   virtual void Retract() {}
   virtual void GoZPos(double z) {}
-  virtual void MoveTo(double x, double y, double z) {
+  virtual void MoveTo(const Vector2D &pos, double z) {
     if (show_move_as_line_) {
       if (!in_move_color_) {
-        ColorSwitch(0, 0, 0, 0.9);
+        ColorSwitch(0, 0, 0, 0.9);  // blue move color
         in_move_color_ = true;
       }
-      printf("%.1f %.1f lineto\n", x, y);
+      printf("%.2f %.2f lineto\n", pos.x, pos.y);
     } else {
-      printf("%.1f %.1f moveto\n", x, y);
+      printf("%.2f %.2f moveto\n", pos.x, pos.y);
     }
   }
-  virtual void ExtrudeTo(double x, double y, double z) {
+  virtual void ExtrudeTo(const Vector2D &pos, double z) {
     if (in_move_color_) {
-      ColorSwitch(line_thickness_, 0, 0, 0);
+      ColorSwitch(line_thickness_, r_, g_, b_);
       in_move_color_ = false;
     }
-    printf("%.1f %.1f lineto\n", x, y);
+    printf("%.2f %.2f extrude-to\n", pos.x, pos.y);
   }
   virtual void SwitchFan(bool on) {}
   virtual double GetExtrusionDistance() { return 0; }
-
+  virtual void SetColor(float r, float g, float b) {
+    r_ = r; g_ = g; b_ = b;
+    if (!in_move_color_) {
+      ColorSwitch(line_thickness_, r, g, b);
+    }
+  }
 private:
   void ColorSwitch(float line_width, float r, float g, float b) {
     printf("currentpoint\nstroke\n");   // finish last path; remember pos
@@ -154,6 +161,7 @@ private:
   const bool show_move_as_line_;
   const float line_thickness_;
   bool in_move_color_;
+  float r_, g_, b_;   // color.
 };
 
 }  // end anonymous namespace.
