@@ -119,7 +119,7 @@ between layers - see below in PostScript output an example.
 ### Reading Polygon from File
 
 Alternatively, you can read an arbitrary polygon from a file. The vertices need
-to be given counterclock wise. The rotation of the resulting screw will be
+to be given counter clockwise. The rotation of the resulting screw will be
 around the origin.
 The polygon file is very simple: each line contins an x and y coordinate,
 As an example, see [sample/hilbert.poly](./sample/hilbert.poly).
