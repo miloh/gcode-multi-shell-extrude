@@ -18,10 +18,6 @@
 #include "printer.h"
 #include "config-values.h"
 
-// 1.0 to display line thickness := shell-thickness.
-// Smaller to better distinguish lines.
-static float kPostscriptLineThickFactor = 0.8;
-
 // The total length of distance going through a polygon.
 double CalcPolygonLen(const Polygon &polygon) {
   double len = 0;
@@ -36,15 +32,21 @@ double CalcPolygonLen(const Polygon &polygon) {
   return len;
 }
 
+// Get temperature for layer. Right now, this is a simple sin(), but
+// could be something more pleasingly erratic, such as Perlin noise.
+static float GetLayerTemperature(float base_temp, float variation,
+                                 float height, float noise_feature) {
+  return sin(2 * M_PI * height / noise_feature) * variation + base_temp;
+}
+
 static void CreateBottomPlate(const Polygon &target_polygon,
                               Printer *printer,
                               const Vector2D &center_offset,
                               float outer_distance, float inner_distance,
                               float spiral_distance) {
   bool is_first = true;
-  printer->Comment("Create brim/vessel-bottom\n");
-  printer->SetColor(0, 0.5, 0);
-  const float z_height = spiral_distance/6;
+  // Initial height.
+  const float z_height = spiral_distance/2;
   const Vector2D centroid = Centroid(target_polygon);
   for (float poffset = outer_distance;
        poffset > inner_distance; poffset -= spiral_distance) {
@@ -82,9 +84,11 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
                             const Vector2D &center,
                             double layer_height, double total_height,
                             double rotation_per_mm,
-                            double lock_offset) {
+                            double lock_offset,
+                            float base_temp, float temp_variation) {
   printer->Comment("Center X=%.1f Y=%.1f\n", center.x, center.y);
   printer->SetColor(0, 0, 0);
+  const float z_bottom_offset = layer_height/2;
   const double rotation_per_layer = layer_height * rotation_per_mm * 2 * M_PI;
   bool fan_is_on = false;
   printer->SwitchFan(false);
@@ -102,6 +106,8 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
   enum State prev_state;
   for (height = 0, angle=0; height < total_height;
        height += layer_height, angle += rotation_per_layer) {
+    printer->SetTemperature(GetLayerTemperature(base_temp, temp_variation,
+                                                height, 30));
     prev_state = state;
 
     // Experimental. Locking screws do have smaller/larger diameter at their
@@ -138,7 +144,7 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
 
     if (state != prev_state) {
       polygon_len = CalcPolygonLen(p);
-      printer->MoveTo(p[0] + center, height);
+      printer->MoveTo(p[0] + center, height + z_bottom_offset);
     }
 
     for (int i = 0; i < (int) p.size(); ++i) {
@@ -152,10 +158,10 @@ static void CreateExtrusion(const Polygon &extrusion_polygon,
       const Vector2D point = rotate(p[i], a);
       const double z = height + layer_height * fraction;
       if (z < total_height - 0.20 * layer_height) {
-        printer->ExtrudeTo(point + center, z);
+        printer->ExtrudeTo(point + center, z + z_bottom_offset);
       } else {
         // In the last layer, we stop extruding to have a smooth finish.
-        printer->MoveTo(point + center, z);
+        printer->MoveTo(point + center, z + z_bottom_offset);
       }
     }
 
@@ -249,6 +255,7 @@ int main(int argc, char *argv[]) {
   FloatParam initial_size (10.0, "size",    's', "Polygon sizing parameter. Means radius if from "
                            "--screw-template, factor for --polygon-file");
   Vector2DParam center_offset(Vector2D(0.0, 0.0), "center-offset", 0, "Rotation-center offset into polygon.");
+  BoolParam  auto_center(false, "auto-center", 0, "Automatically center around centroid.");
   FloatParam pump         (0.0,   "pump",    0, "Pump polygon as if the center was not a dot, but a circle of this radius");
   IntParam screw_count    (2,     "number", 'n', "Number of screws to be printed");
   FloatParam initial_shell(0,     "start-offset", 0, "Initial offset for first polygon");
@@ -268,6 +275,8 @@ int main(int argc, char *argv[]) {
 
   ParamHeadline h5("Printer Parameters");
   FloatParam nozzle_diameter(0.4, "nozzle-diameter", 0, "Diameter of extruder nozzle");
+  FloatParam temperature(190, "temperature", 0, "Extrusion temperature.");
+  FloatParam temp_variation(0, "temperature-variation", 0, "Temperature variation around --temperature, e.g. to get dark lines in wood filament.");
   FloatParam filament_diameter(1.75, "filament-diameter", 0, "Diameter of filament");
   Vector2DParam machine_limit(Vector2D(150.0,150.0), "bed-size",    'L',  "x/y size limit of your printbed.");
   Vector2DParam head_offset(Vector2D(45.0,45.0),"head-offset", 'o', "dx/dy offset per print.");
@@ -276,6 +285,7 @@ int main(int argc, char *argv[]) {
   // Output options
   ParamHeadline h6("Output Options");
   BoolParam do_postscript(false, "postscript", 'P', "PostScript output instead of GCode output");
+  FloatParam postscript_thick_factor(1.0, "ps-thick-factor", 0, "Line thickness factor for shell size. Chooser smaller (e.g. 0.1) to better see overlaps");
   BoolParam matryoshka(false,    "nested",      0, "For PostScript: show nested (Matryoshka doll style)");
 
   if (!SetParametersFromCommandline(argc, argv)) {
@@ -314,6 +324,11 @@ int main(int argc, char *argv[]) {
     input_polygon = RadialPumpPolygon(input_polygon, pump);
   }
 
+  if (auto_center) {
+    center_offset = Centroid(input_polygon);
+    center_offset = Vector2D(0,0) - center_offset;
+  }
+  
   // .. and offsetting
   if (center_offset->x != 0 || center_offset->y != 0) {
     input_polygon = OffsetCenter(input_polygon,
@@ -376,9 +391,9 @@ int main(int argc, char *argv[]) {
                             3 * layer_height); // not needed more.
     // no move lines w/ Matryoshka
     printer = CreatePostscriptPrinter(!matryoshka,
-                                      kPostscriptLineThickFactor * shell_thickness);
+                                      postscript_thick_factor * shell_thickness);
   } else {
-    printer = CreateGCodePrinter(filament_extrusion_factor);
+    printer = CreateGCodePrinter(filament_extrusion_factor, temperature);
   }
   printer->Preamble(machine_limit, feed_mm_per_sec);
 
@@ -422,8 +437,8 @@ int main(int argc, char *argv[]) {
   Vector2D center = edge_offset;
   printer->SetSpeed(feed_mm_per_sec);  // initial speed.
   for (int i = 0; i < screw_count; ++i) {
-    Polygon polygon = PolygonOffset(base_polygon,
-                                    initial_shell + i * shell_increment);
+    const float current_offset = initial_shell + i * shell_increment;
+    Polygon polygon = PolygonOffset(base_polygon, current_offset);
     if (polygon.size() == 0) {
       fprintf(stderr, "Polygon offset %.1f results in empty polygon\n",
               initial_shell + i * shell_increment);
@@ -436,29 +451,39 @@ int main(int argc, char *argv[]) {
       center = center + screw_radius;
     }
     printer->MoveTo(center, i > 0 ? total_height + 5 : 5);
-    float layer_feedrate = CalcPolygonLen(polygon) / min_layer_time;
+    const float polygon_len = CalcPolygonLen(polygon);
+    const float area = polygon_len * total_height * 2;  // inside and out.
+    float layer_feedrate =  polygon_len / min_layer_time;
     layer_feedrate = std::min(layer_feedrate, feed_mm_per_sec.get());
     printer->ResetExtrude();
     printer->SetSpeed(layer_feedrate);
     printer->Comment("Screw #%d, polygon-offset=%.1f\n",
                      i+1, initial_shell + i * shell_increment);
+    if (vessel) {
+      const float spiral_layer_distance = shell_thickness * brim_spiral_factor;
+      printer->Comment("Create vessel-bottom\n");
+      printer->SetColor(0.5, 0, 0.5);
+      CreateBottomPlate(polygon, printer, center,
+                        0, -radius, spiral_layer_distance);
+      // TODO: make this multi-layer.
+      printer->GoZPos(2);
+    }
+
     if (brim > 0) {
       const float spiral_layer_distance = shell_thickness * brim_spiral_factor;
       int layers = (int) ceil(brim / spiral_layer_distance);
       Polygon brim_polygon = polygon;
       if (brim_smooth_radius > 0)
         brim_polygon = PolygonOffset(PolygonOffset(polygon, brim_smooth_radius), -brim_smooth_radius);
+      printer->Comment("Create brim\n");
+      printer->SetColor(0, 0.5, 0);
       CreateBottomPlate(brim_polygon, printer, center,
                         layers * spiral_layer_distance, spiral_layer_distance/2,
                         spiral_layer_distance);
     }
-    if (vessel) {
-      const float spiral_layer_distance = shell_thickness * brim_spiral_factor;
-      CreateBottomPlate(polygon, printer, center,
-                        0, -radius, spiral_layer_distance);
-    }
     CreateExtrusion(polygon, printer, center, layer_height, total_height,
-                    rotation_per_mm, lock_offset);
+                    rotation_per_mm, lock_offset,
+                    temperature, temp_variation);
     const double travel = printer->GetExtrusionDistance();  // since last reset.
     total_travel += travel;
     total_time += travel / layer_feedrate;  // roughly (without acceleration)
@@ -468,10 +493,14 @@ int main(int argc, char *argv[]) {
     if (!matryoshka) {
       center = center + screw_radius + head_offset;
     }
+    if (!do_postscript) {
+      fprintf(stderr, "Screw-surface (out+in) for offset %.1f: ~%.1f cm²\n",
+              current_offset, area / 100);
+    }
   }
 
   printer->Postamble();
-  if (total_time > 0) {  // doesn't make sense to print for PostScript
+  if (!do_postscript) {  // doesn't make sense to print for PostScript
     fprintf(stderr, "Total time >= %.0f seconds; %.2fm filament\n",
             total_time, total_travel * filament_extrusion_factor / 1000);
   }
