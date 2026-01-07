@@ -44,6 +44,7 @@ static void CreateBottomPlate(const Polygon &target_polygon,
                               const Vector2D &center_offset,
                               float outer_distance, float inner_distance,
                               float spiral_distance) {
+  const float kBottomExtrusionMultiplier = 1.2;  // watertight
   bool is_first = true;
   // Initial height.
   const float z_height = spiral_distance/2;
@@ -72,7 +73,7 @@ static void CreateBottomPlate(const Polygon &target_polygon,
       if (is_first)
         printer->MoveTo(next_pos, z_height);
       else
-        printer->ExtrudeTo(next_pos, z_height, 1.0);
+        printer->ExtrudeTo(next_pos, z_height, kBottomExtrusionMultiplier);
       is_first = false;
     }
   }
@@ -298,6 +299,7 @@ int main(int argc, char *argv[]) {
                                "Distance between spirals in brim as factor of shell-thickness");
   FloatParam brim_smooth_radius(0, "brim-smooth-radius", 0, "Smoothing of brim connection to polygon to not get lost in inner details");
   BoolParam vessel(false, "vessel", 0, "Make a vessel with closed bottom");
+  FloatParam vessel_hole(0, "vessel-hole", 0, "If --vessel, start at this radius from centroid");
 
   ParamHeadline h4("Quality");
   FloatParam layer_height (0.16,  "layer-height", 'l', "Height of each layer");
@@ -501,8 +503,9 @@ int main(int argc, char *argv[]) {
       const float spiral_layer_distance = shell_thickness * brim_spiral_factor;
       printer->Comment("Create vessel-bottom\n");
       printer->SetColor(0.5, 0, 0.5);
+      printer->SetSpeed(feed_mm_per_sec / 2);
       CreateBottomPlate(polygon, printer, center,
-                        0, -radius, spiral_layer_distance);
+                        0, -radius+vessel_hole, spiral_layer_distance);
       // TODO: make this multi-layer.
       printer->GoZPos(2);
     }
@@ -515,6 +518,7 @@ int main(int argc, char *argv[]) {
         brim_polygon = PolygonOffset(PolygonOffset(polygon, brim_smooth_radius), -brim_smooth_radius);
       printer->Comment("Create brim\n");
       printer->SetColor(0, 0.5, 0);
+      printer->SetSpeed(feed_mm_per_sec / 2);
       CreateBottomPlate(brim_polygon, printer, center,
                         layers * spiral_layer_distance, spiral_layer_distance/2,
                         spiral_layer_distance);
