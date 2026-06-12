@@ -3,7 +3,7 @@ pkgs.mkShell {
   buildInputs = with pkgs;
     [
       tio
-      openscad
+      openscad-unstable
       prusa-slicer
     ];
 }
